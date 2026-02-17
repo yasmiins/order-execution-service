@@ -3,16 +3,21 @@ package io.github.yasmiins.orderexecutionservice;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -47,6 +52,11 @@ class OrderControllerIntegrationTest {
     private OrderRepository orderRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+
+    @BeforeEach
+    void cleanDatabase() {
+        orderRepository.deleteAll();
+    }
 
     @Test
     void createOrder_persistsAndReturnsOrder() {
@@ -128,5 +138,173 @@ class OrderControllerIntegrationTest {
             return;
         }
         throw new AssertionError("Expected 400 Bad Request");
+    }
+
+    @Test
+    void getOrder_returnsOrder() {
+        OrderResponse created = createLimitOrder("AAPL");
+
+        String url = ordersUrl() + "/" + created.id();
+        ResponseEntity<OrderResponse> response =
+            restTemplate.getForEntity(url, OrderResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        OrderResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.id()).isEqualTo(created.id());
+        assertThat(body.symbol()).isEqualTo("AAPL");
+    }
+
+    @Test
+    void cancelOrder_updatesStatus() {
+        OrderResponse created = createLimitOrder("AAPL");
+
+        String url = ordersUrl() + "/" + created.id() + "/cancel";
+        ResponseEntity<OrderResponse> response =
+            restTemplate.postForEntity(url, null, OrderResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        OrderResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(OrderStatus.CANCELED);
+
+        Optional<Order> saved = orderRepository.findById(created.id());
+        assertThat(saved).isPresent();
+        assertThat(saved.get().getStatus()).isEqualTo(OrderStatus.CANCELED);
+    }
+
+    @Test
+    void cancelOrder_twice_isIdempotent() {
+        OrderResponse created = createLimitOrder("AAPL");
+
+        String url = ordersUrl() + "/" + created.id() + "/cancel";
+        ResponseEntity<OrderResponse> first =
+            restTemplate.postForEntity(url, null, OrderResponse.class);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(first.getBody()).isNotNull();
+        assertThat(first.getBody().status()).isEqualTo(OrderStatus.CANCELED);
+
+        ResponseEntity<OrderResponse> second =
+            restTemplate.postForEntity(url, null, OrderResponse.class);
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(second.getBody()).isNotNull();
+        assertThat(second.getBody().status()).isEqualTo(OrderStatus.CANCELED);
+    }
+
+    @Test
+    void cancelOrder_filled_returnsConflict() {
+        OrderResponse created = createLimitOrder("AAPL");
+        Order order = orderRepository.findById(created.id()).orElseThrow();
+        order.setFilledQuantity(order.getQuantity());
+        order.setStatus(OrderStatus.FILLED);
+        orderRepository.save(order);
+
+        String url = ordersUrl() + "/" + created.id() + "/cancel";
+        try {
+            restTemplate.postForEntity(url, null, ApiError.class);
+        } catch (HttpClientErrorException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            return;
+        }
+        throw new AssertionError("Expected 409 Conflict");
+    }
+
+    @Test
+    void cancelOrder_nonexistent_returnsNotFound() {
+        String url = ordersUrl() + "/" + UUID.randomUUID() + "/cancel";
+        try {
+            restTemplate.postForEntity(url, null, ApiError.class);
+        } catch (HttpClientErrorException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+            return;
+        }
+        throw new AssertionError("Expected 404 Not Found");
+    }
+
+    @Test
+    void getOrders_invalidStatus_returnsBadRequest() throws Exception {
+        String url = ordersUrl() + "?status=notastatus";
+        try {
+            restTemplate.getForEntity(url, ApiError.class);
+        } catch (HttpClientErrorException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            ApiError error = objectMapper.readValue(ex.getResponseBodyAsByteArray(), ApiError.class);
+            assertThat(error.message()).contains("status");
+            return;
+        }
+        throw new AssertionError("Expected 400 Bad Request");
+    }
+
+    @Test
+    void getOrders_blankSymbol_returnsBadRequest() throws Exception {
+        String url = ordersUrl() + "?symbol=";
+        try {
+            restTemplate.getForEntity(url, ApiError.class);
+        } catch (HttpClientErrorException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            ApiError error = objectMapper.readValue(ex.getResponseBodyAsByteArray(), ApiError.class);
+            assertThat(error.message()).contains("Symbol must be provided");
+            return;
+        }
+        throw new AssertionError("Expected 400 Bad Request");
+    }
+
+    @Test
+    void getOrders_withFilters_returnsMatching() {
+        OrderResponse aapl = createLimitOrder("AAPL");
+        OrderResponse msft = createLimitOrder("MSFT");
+
+        String cancelUrl = ordersUrl() + "/" + aapl.id() + "/cancel";
+        restTemplate.postForEntity(cancelUrl, null, OrderResponse.class);
+
+        List<OrderResponse> canceled = fetchOrders("?status=CANCELED");
+        assertThat(canceled).hasSize(1);
+        assertThat(canceled.get(0).id()).isEqualTo(aapl.id());
+
+        List<OrderResponse> msftOrders = fetchOrders("?symbol=MSFT");
+        assertThat(msftOrders).hasSize(1);
+        assertThat(msftOrders.get(0).id()).isEqualTo(msft.id());
+
+        List<OrderResponse> aaplCanceled = fetchOrders("?symbol=AAPL&status=CANCELED");
+        assertThat(aaplCanceled).hasSize(1);
+        assertThat(aaplCanceled.get(0).id()).isEqualTo(aapl.id());
+    }
+
+    private OrderResponse createLimitOrder(String symbol) {
+        CreateOrderRequest request = new CreateOrderRequest(
+            symbol,
+            OrderSide.BUY,
+            null,
+            new BigDecimal("10"),
+            new BigDecimal("100.50")
+        );
+
+        String url = ordersUrl();
+        ResponseEntity<OrderResponse> response =
+            restTemplate.postForEntity(url, request, OrderResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        OrderResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        return body;
+    }
+
+    private List<OrderResponse> fetchOrders(String query) {
+        String url = ordersUrl() + query;
+        ResponseEntity<List<OrderResponse>> response = restTemplate.exchange(
+            url,
+            HttpMethod.GET,
+            HttpEntity.EMPTY,
+            new ParameterizedTypeReference<>() {
+            }
+        );
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<OrderResponse> body = response.getBody();
+        assertThat(body).isNotNull();
+        return body;
+    }
+
+    private String ordersUrl() {
+        return "http://localhost:" + port + "/orders";
     }
 }
