@@ -1,12 +1,15 @@
 package io.github.yasmiins.orderexecutionservice.service;
 
 import java.math.BigDecimal;
-import java.util.Locale;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import io.github.yasmiins.orderexecutionservice.config.OrderValidationProperties;
 import io.github.yasmiins.orderexecutionservice.domain.Instrument;
@@ -31,6 +34,7 @@ public class OrderService {
         this.maxOrderSize = validationProperties.getMaxOrderSize();
     }
 
+    @Transactional
     public Order createOrder(
         String symbol,
         OrderSide side,
@@ -55,6 +59,42 @@ public class OrderService {
             ZERO,
             OrderStatus.NEW
         );
+        return orderRepository.save(order);
+    }
+
+    @Transactional(readOnly = true)
+    public Order getOrder(UUID orderId) {
+        return orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<Order> getOrders(String symbol, OrderStatus status) {
+        String normalizedSymbol = normalizeSymbolFilter(symbol);
+        Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");
+        if (normalizedSymbol != null && status != null) {
+            return orderRepository.findByInstrumentSymbolAndStatus(normalizedSymbol, status, sort);
+        }
+        if (normalizedSymbol != null) {
+            return orderRepository.findByInstrumentSymbol(normalizedSymbol, sort);
+        }
+        if (status != null) {
+            return orderRepository.findByStatus(status, sort);
+        }
+        return orderRepository.findAll(sort);
+    }
+
+    @Transactional
+    public Order cancelOrder(UUID orderId) {
+        Order order = getOrder(orderId);
+        OrderStatus status = order.getStatus();
+        if (status == OrderStatus.CANCELED) {
+            return order;
+        }
+        if (status == OrderStatus.FILLED || status == OrderStatus.REJECTED) {
+            throw new OrderStateException("Order in status " + status + " cannot be canceled");
+        }
+        order.setStatus(OrderStatus.CANCELED);
         return orderRepository.save(order);
     }
 
@@ -95,6 +135,17 @@ public class OrderService {
     private String normalizeSymbol(String symbol) {
         if (symbol == null) {
             throw new OrderValidationException("Symbol must be provided");
+        }
+        String trimmed = symbol.trim();
+        if (trimmed.isEmpty()) {
+            throw new OrderValidationException("Symbol must be provided");
+        }
+        return trimmed.toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeSymbolFilter(String symbol) {
+        if (symbol == null) {
+            return null;
         }
         String trimmed = symbol.trim();
         if (trimmed.isEmpty()) {
