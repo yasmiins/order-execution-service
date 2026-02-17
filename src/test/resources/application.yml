@@ -6,6 +6,13 @@ spring:
   flyway:
     enabled: true
 
+order:
+  validation:
+    supported-symbols:
+      - AAPL
+      - MSFT
+    max-order-size: 1000000
+
 logging:
   level:
     io.github.yasmiins.orderexecutionservice: DEBUG
