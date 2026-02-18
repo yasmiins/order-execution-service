@@ -31,6 +31,20 @@ order:
       - TSLA
     max-order-size: 1000000
 
+simulator:
+  enabled: true
+  scheduling:
+    enabled: true
+  tick-ms: 1000
+  min-fill-percent: 0.25
+  max-fill-percent: 0.50
+  default-price: 100
+  prices:
+    AAPL: 100
+    MSFT: 200
+    GOOG: 150
+    TSLA: 250
+
 server:
   port: 8080
 

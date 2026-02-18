@@ -1,0 +1,128 @@
+package io.github.yasmiins.orderexecutionservice.service;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Objects;
+import java.util.UUID;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import io.github.yasmiins.orderexecutionservice.config.SimulatedFillProperties;
+import io.github.yasmiins.orderexecutionservice.domain.Execution;
+import io.github.yasmiins.orderexecutionservice.domain.Order;
+import io.github.yasmiins.orderexecutionservice.domain.OrderSide;
+import io.github.yasmiins.orderexecutionservice.domain.OrderStatus;
+import io.github.yasmiins.orderexecutionservice.domain.OrderType;
+import io.github.yasmiins.orderexecutionservice.repository.ExecutionRepository;
+import io.github.yasmiins.orderexecutionservice.repository.OrderRepository;
+
+@Service
+public class SimulatedFillProcessor {
+
+    private static final int SCALE = 6;
+
+    private final OrderRepository orderRepository;
+    private final ExecutionRepository executionRepository;
+    private final SimulatedFillProperties properties;
+
+    public SimulatedFillProcessor(
+        OrderRepository orderRepository,
+        ExecutionRepository executionRepository,
+        SimulatedFillProperties properties
+    ) {
+        this.orderRepository = orderRepository;
+        this.executionRepository = executionRepository;
+        this.properties = properties;
+    }
+
+    @Transactional
+    public void processOrder(UUID orderId, BigDecimal price) {
+        Order order = orderRepository.findById(orderId).orElse(null);
+        if (order == null) {
+            return;
+        }
+
+        OrderStatus status = order.getStatus();
+        if (status == OrderStatus.CANCELED
+            || status == OrderStatus.REJECTED
+            || status == OrderStatus.FILLED) {
+            return;
+        }
+
+        if (!isMarketable(order, price)) {
+            return;
+        }
+
+        BigDecimal remaining = order.getQuantity().subtract(order.getFilledQuantity());
+        if (remaining.signum() <= 0) {
+            order.setStatus(OrderStatus.FILLED);
+            orderRepository.save(order);
+            return;
+        }
+
+        BigDecimal fillQuantity = calculateFillQuantity(order, remaining);
+        Execution execution = new Execution(
+            order,
+            order.getInstrument(),
+            fillQuantity,
+            price
+        );
+        executionRepository.save(execution);
+
+        BigDecimal newFilled = order.getFilledQuantity().add(fillQuantity);
+        order.setFilledQuantity(newFilled);
+        if (newFilled.compareTo(order.getQuantity()) >= 0) {
+            order.setStatus(OrderStatus.FILLED);
+        } else {
+            order.setStatus(OrderStatus.PARTIALLY_FILLED);
+        }
+        orderRepository.save(order);
+    }
+
+    private boolean isMarketable(Order order, BigDecimal price) {
+        if (order.getOrderType() == OrderType.MARKET) {
+            return true;
+        }
+        BigDecimal limitPrice = order.getPrice();
+        if (limitPrice == null) {
+            return false;
+        }
+        if (order.getSide() == OrderSide.BUY) {
+            return limitPrice.compareTo(price) >= 0;
+        }
+        return limitPrice.compareTo(price) <= 0;
+    }
+
+    private BigDecimal calculateFillQuantity(Order order, BigDecimal remaining) {
+        BigDecimal percent = resolveFillPercent(order);
+        BigDecimal filled = remaining.multiply(percent).setScale(SCALE, RoundingMode.DOWN);
+        if (filled.signum() == 0) {
+            return remaining;
+        }
+        if (filled.compareTo(remaining) > 0) {
+            return remaining;
+        }
+        return filled;
+    }
+
+    private BigDecimal resolveFillPercent(Order order) {
+        BigDecimal min = properties.getMinFillPercent();
+        BigDecimal max = properties.getMaxFillPercent();
+        int minBp = toBasisPoints(min);
+        int maxBp = toBasisPoints(max);
+        if (maxBp < minBp) {
+            int temp = maxBp;
+            maxBp = minBp;
+            minBp = temp;
+        }
+        int range = maxBp - minBp;
+        int hash = Math.abs(Objects.hash(order.getId(), order.getFilledQuantity()));
+        int pick = range == 0 ? minBp : minBp + (hash % (range + 1));
+        return BigDecimal.valueOf(pick).movePointLeft(2);
+    }
+
+    private int toBasisPoints(BigDecimal value) {
+        return value.movePointRight(2).setScale(0, RoundingMode.HALF_UP).intValueExact();
+    }
+}

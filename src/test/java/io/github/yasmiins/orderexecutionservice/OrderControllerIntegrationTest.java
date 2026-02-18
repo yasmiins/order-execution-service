@@ -35,7 +35,10 @@ import io.github.yasmiins.orderexecutionservice.web.CreateOrderRequest;
 import io.github.yasmiins.orderexecutionservice.web.OrderResponse;
 
 @Testcontainers
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = "simulator.enabled=false"
+)
 class OrderControllerIntegrationTest {
 
     @Container

@@ -10,6 +10,8 @@ import io.github.yasmiins.orderexecutionservice.domain.Order;
 import io.github.yasmiins.orderexecutionservice.domain.OrderStatus;
 
 public interface OrderRepository extends JpaRepository<Order, UUID> {
+    List<Order> findByStatusIn(List<OrderStatus> statuses, Sort sort);
+
     List<Order> findByInstrumentSymbol(String symbol, Sort sort);
 
     List<Order> findByStatus(OrderStatus status, Sort sort);
