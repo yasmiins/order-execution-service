@@ -16,6 +16,8 @@ import io.github.yasmiins.orderexecutionservice.domain.OrderStatus;
 import io.github.yasmiins.orderexecutionservice.domain.OrderType;
 import io.github.yasmiins.orderexecutionservice.repository.ExecutionRepository;
 import io.github.yasmiins.orderexecutionservice.repository.OrderRepository;
+import io.github.yasmiins.orderexecutionservice.service.event.OrderFilled;
+import io.github.yasmiins.orderexecutionservice.service.event.OrderPartiallyFilled;
 
 @Service
 public class SimulatedFillProcessor {
@@ -25,15 +27,18 @@ public class SimulatedFillProcessor {
     private final OrderRepository orderRepository;
     private final ExecutionRepository executionRepository;
     private final SimulatedFillProperties properties;
+    private final DomainEventPublisher eventPublisher;
 
     public SimulatedFillProcessor(
         OrderRepository orderRepository,
         ExecutionRepository executionRepository,
-        SimulatedFillProperties properties
+        SimulatedFillProperties properties,
+        DomainEventPublisher eventPublisher
     ) {
         this.orderRepository = orderRepository;
         this.executionRepository = executionRepository;
         this.properties = properties;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -43,10 +48,10 @@ public class SimulatedFillProcessor {
             return;
         }
 
-        OrderStatus status = order.getStatus();
-        if (status == OrderStatus.CANCELED
-            || status == OrderStatus.REJECTED
-            || status == OrderStatus.FILLED) {
+        OrderStatus beforeStatus = order.getStatus();
+        if (beforeStatus == OrderStatus.CANCELED
+            || beforeStatus == OrderStatus.REJECTED
+            || beforeStatus == OrderStatus.FILLED) {
             return;
         }
 
@@ -56,8 +61,11 @@ public class SimulatedFillProcessor {
 
         BigDecimal remaining = order.getQuantity().subtract(order.getFilledQuantity());
         if (remaining.signum() <= 0) {
-            order.setStatus(OrderStatus.FILLED);
-            orderRepository.save(order);
+            if (beforeStatus != OrderStatus.FILLED) {
+                order.setStatus(OrderStatus.FILLED);
+                orderRepository.save(order);
+                publishStatusTransition(beforeStatus, OrderStatus.FILLED, order.getId());
+            }
             return;
         }
 
@@ -72,12 +80,12 @@ public class SimulatedFillProcessor {
 
         BigDecimal newFilled = order.getFilledQuantity().add(fillQuantity);
         order.setFilledQuantity(newFilled);
-        if (newFilled.compareTo(order.getQuantity()) >= 0) {
-            order.setStatus(OrderStatus.FILLED);
-        } else {
-            order.setStatus(OrderStatus.PARTIALLY_FILLED);
-        }
+        OrderStatus nextStatus = newFilled.compareTo(order.getQuantity()) >= 0
+            ? OrderStatus.FILLED
+            : OrderStatus.PARTIALLY_FILLED;
+        order.setStatus(nextStatus);
         orderRepository.save(order);
+        publishStatusTransition(beforeStatus, nextStatus, order.getId());
     }
 
     private boolean isMarketable(Order order, BigDecimal price) {
@@ -124,5 +132,17 @@ public class SimulatedFillProcessor {
 
     private int toBasisPoints(BigDecimal value) {
         return value.movePointRight(2).setScale(0, RoundingMode.HALF_UP).intValueExact();
+    }
+
+    private void publishStatusTransition(OrderStatus before, OrderStatus after, UUID orderId) {
+        if (before == after) {
+            return;
+        }
+        if (after == OrderStatus.PARTIALLY_FILLED) {
+            eventPublisher.publishAfterCommit(new OrderPartiallyFilled(orderId));
+        }
+        if (after == OrderStatus.FILLED) {
+            eventPublisher.publishAfterCommit(new OrderFilled(orderId));
+        }
     }
 }

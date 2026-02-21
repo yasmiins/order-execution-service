@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+import io.github.yasmiins.orderexecutionservice.service.IdempotencyConflictException;
 import io.github.yasmiins.orderexecutionservice.service.OrderNotFoundException;
 import io.github.yasmiins.orderexecutionservice.service.OrderStateException;
 import io.github.yasmiins.orderexecutionservice.service.OrderValidationException;
@@ -57,6 +58,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
     public ResponseEntity<ApiError> handleOptimisticLock(ObjectOptimisticLockingFailureException ex) {
         ApiError error = new ApiError("Order was updated by another request. Please retry.", Collections.emptyMap());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ApiError> handleIdempotencyConflict(IdempotencyConflictException ex) {
+        ApiError error = new ApiError(ex.getMessage(), Collections.emptyMap());
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 

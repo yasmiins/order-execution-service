@@ -12,8 +12,6 @@ import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -24,7 +22,6 @@ import jakarta.persistence.Version;
 public class Order {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
     @Version
@@ -75,6 +72,26 @@ public class Order {
         BigDecimal filledQuantity,
         OrderStatus status
     ) {
+        this.instrument = instrument;
+        this.side = side;
+        this.orderType = orderType;
+        this.quantity = quantity;
+        this.price = price;
+        this.filledQuantity = filledQuantity;
+        this.status = status;
+    }
+
+    public Order(
+        UUID id,
+        Instrument instrument,
+        OrderSide side,
+        OrderType orderType,
+        BigDecimal quantity,
+        BigDecimal price,
+        BigDecimal filledQuantity,
+        OrderStatus status
+    ) {
+        this.id = id;
         this.instrument = instrument;
         this.side = side;
         this.orderType = orderType;
