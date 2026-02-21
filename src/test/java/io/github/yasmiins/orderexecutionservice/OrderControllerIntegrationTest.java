@@ -16,6 +16,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +30,7 @@ import io.github.yasmiins.orderexecutionservice.domain.Order;
 import io.github.yasmiins.orderexecutionservice.domain.OrderSide;
 import io.github.yasmiins.orderexecutionservice.domain.OrderStatus;
 import io.github.yasmiins.orderexecutionservice.domain.OrderType;
+import io.github.yasmiins.orderexecutionservice.repository.IdempotencyRecordRepository;
 import io.github.yasmiins.orderexecutionservice.repository.OrderRepository;
 import io.github.yasmiins.orderexecutionservice.web.ApiError;
 import io.github.yasmiins.orderexecutionservice.web.CreateOrderRequest;
@@ -54,10 +56,14 @@ class OrderControllerIntegrationTest {
     @Autowired
     private OrderRepository orderRepository;
 
+    @Autowired
+    private IdempotencyRecordRepository idempotencyRecordRepository;
+
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     @BeforeEach
     void cleanDatabase() {
+        idempotencyRecordRepository.deleteAll();
         orderRepository.deleteAll();
     }
 
@@ -271,6 +277,84 @@ class OrderControllerIntegrationTest {
         List<OrderResponse> aaplCanceled = fetchOrders("?symbol=AAPL&status=CANCELED");
         assertThat(aaplCanceled).hasSize(1);
         assertThat(aaplCanceled.get(0).id()).isEqualTo(aapl.id());
+    }
+
+    @Test
+    void createOrder_idempotencyKey_reusesOrder() {
+        CreateOrderRequest request = new CreateOrderRequest(
+            "AAPL",
+            OrderSide.BUY,
+            null,
+            new BigDecimal("10"),
+            new BigDecimal("100.50")
+        );
+
+        String url = ordersUrl();
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", "order-123");
+        HttpEntity<CreateOrderRequest> entity = new HttpEntity<>(request, headers);
+
+        ResponseEntity<OrderResponse> first = restTemplate.exchange(
+            url,
+            HttpMethod.POST,
+            entity,
+            OrderResponse.class
+        );
+        ResponseEntity<OrderResponse> second = restTemplate.exchange(
+            url,
+            HttpMethod.POST,
+            entity,
+            OrderResponse.class
+        );
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(first.getBody()).isNotNull();
+        assertThat(second.getBody()).isNotNull();
+        assertThat(second.getBody().id()).isEqualTo(first.getBody().id());
+        assertThat(orderRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void createOrder_idempotencyKey_mismatch_returnsConflict() throws Exception {
+        CreateOrderRequest request = new CreateOrderRequest(
+            "AAPL",
+            OrderSide.BUY,
+            null,
+            new BigDecimal("10"),
+            new BigDecimal("100.50")
+        );
+        CreateOrderRequest different = new CreateOrderRequest(
+            "AAPL",
+            OrderSide.BUY,
+            null,
+            new BigDecimal("12"),
+            new BigDecimal("100.50")
+        );
+
+        String url = ordersUrl();
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", "order-456");
+        HttpEntity<CreateOrderRequest> entity = new HttpEntity<>(request, headers);
+        HttpEntity<CreateOrderRequest> differentEntity = new HttpEntity<>(different, headers);
+
+        ResponseEntity<OrderResponse> first = restTemplate.exchange(
+            url,
+            HttpMethod.POST,
+            entity,
+            OrderResponse.class
+        );
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        try {
+            restTemplate.exchange(url, HttpMethod.POST, differentEntity, ApiError.class);
+        } catch (HttpClientErrorException ex) {
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            ApiError error = objectMapper.readValue(ex.getResponseBodyAsByteArray(), ApiError.class);
+            assertThat(error.message()).contains("Idempotency");
+            return;
+        }
+        throw new AssertionError("Expected 409 Conflict");
     }
 
     private OrderResponse createLimitOrder(String symbol) {

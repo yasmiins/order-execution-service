@@ -38,6 +38,9 @@ class SimulatedFillProcessorTest {
     @Mock
     private ExecutionRepository executionRepository;
 
+    @Mock
+    private DomainEventPublisher eventPublisher;
+
     private SimulatedFillProperties properties;
     private SimulatedFillProcessor processor;
 
@@ -49,7 +52,7 @@ class SimulatedFillProcessorTest {
         properties.setDefaultPrice(new BigDecimal("100"));
         properties.setPrices(Map.of("AAPL", new BigDecimal("100")));
 
-        processor = new SimulatedFillProcessor(orderRepository, executionRepository, properties);
+        processor = new SimulatedFillProcessor(orderRepository, executionRepository, properties, eventPublisher);
     }
 
     @Test
