@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,10 +33,14 @@ public class OrderService {
 
     private static final BigDecimal ZERO = BigDecimal.ZERO;
     private static final String NULL_VALUE = "<null>";
+    private static final String LIFECYCLE_LOG_TEMPLATE =
+        "event={} orderId={} symbol={} fromStatus={} toStatus={} filledQuantity={} quantity={} price={} idempotencyKey={}";
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final OrderRepository orderRepository;
     private final IdempotencyRecordRepository idempotencyRecordRepository;
     private final DomainEventPublisher eventPublisher;
+    private final OrderMetrics orderMetrics;
     private final Set<String> supportedSymbols;
     private final BigDecimal maxOrderSize;
 
@@ -42,11 +48,13 @@ public class OrderService {
         OrderRepository orderRepository,
         IdempotencyRecordRepository idempotencyRecordRepository,
         OrderValidationProperties validationProperties,
-        DomainEventPublisher eventPublisher
+        DomainEventPublisher eventPublisher,
+        OrderMetrics orderMetrics
     ) {
         this.orderRepository = orderRepository;
         this.idempotencyRecordRepository = idempotencyRecordRepository;
         this.eventPublisher = eventPublisher;
+        this.orderMetrics = orderMetrics;
         this.supportedSymbols = normalizeSymbols(validationProperties.getSupportedSymbols());
         this.maxOrderSize = validationProperties.getMaxOrderSize();
     }
@@ -63,6 +71,19 @@ public class OrderService {
         Order order = buildOrder(UUID.randomUUID(), data);
         Order saved = orderRepository.save(order);
         eventPublisher.publishAfterCommit(new OrderAccepted(saved.getId()));
+        orderMetrics.incrementAccepted();
+        log.info(
+            LIFECYCLE_LOG_TEMPLATE,
+            "order_accepted",
+            saved.getId(),
+            saved.getInstrument().getSymbol(),
+            null,
+            saved.getStatus(),
+            saved.getFilledQuantity(),
+            saved.getQuantity(),
+            saved.getPrice(),
+            null
+        );
         return saved;
     }
 
@@ -98,6 +119,19 @@ public class OrderService {
         Order order = buildOrder(orderId, data);
         Order saved = orderRepository.save(order);
         eventPublisher.publishAfterCommit(new OrderAccepted(saved.getId()));
+        orderMetrics.incrementAccepted();
+        log.info(
+            LIFECYCLE_LOG_TEMPLATE,
+            "order_accepted",
+            saved.getId(),
+            saved.getInstrument().getSymbol(),
+            null,
+            saved.getStatus(),
+            saved.getFilledQuantity(),
+            saved.getQuantity(),
+            saved.getPrice(),
+            trimmedKey
+        );
         return saved;
     }
 
@@ -136,11 +170,46 @@ public class OrderService {
         order.setStatus(OrderStatus.CANCELED);
         Order saved = orderRepository.save(order);
         eventPublisher.publishAfterCommit(new OrderCanceled(saved.getId()));
+        orderMetrics.incrementCanceled();
+        log.info(
+            LIFECYCLE_LOG_TEMPLATE,
+            "order_canceled",
+            saved.getId(),
+            saved.getInstrument().getSymbol(),
+            status,
+            saved.getStatus(),
+            saved.getFilledQuantity(),
+            saved.getQuantity(),
+            saved.getPrice(),
+            null
+        );
         return saved;
     }
 
     private Order resolveIdempotentReplay(IdempotencyRecord record, String fingerprint) {
         if (!record.getRequestFingerprint().equals(fingerprint)) {
+            Order existingOrder = orderRepository.findById(record.getOrderId()).orElse(null);
+            OrderStatus currentStatus = existingOrder == null ? null : existingOrder.getStatus();
+            String symbol = null;
+            if (existingOrder != null && existingOrder.getInstrument() != null) {
+                symbol = existingOrder.getInstrument().getSymbol();
+            }
+            BigDecimal filledQuantity = existingOrder == null ? null : existingOrder.getFilledQuantity();
+            BigDecimal quantity = existingOrder == null ? null : existingOrder.getQuantity();
+            BigDecimal price = existingOrder == null ? null : existingOrder.getPrice();
+            orderMetrics.incrementRejectedIdempotency();
+            log.warn(
+                LIFECYCLE_LOG_TEMPLATE,
+                "idempotency_conflict",
+                record.getOrderId(),
+                symbol,
+                currentStatus,
+                null,
+                filledQuantity,
+                quantity,
+                price,
+                record.getIdempotencyKey()
+            );
             throw new IdempotencyConflictException(
                 "Idempotency key already used with different request payload"
             );

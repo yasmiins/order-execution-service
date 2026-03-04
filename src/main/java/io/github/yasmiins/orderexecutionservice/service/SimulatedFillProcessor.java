@@ -5,6 +5,8 @@ import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,22 +25,28 @@ import io.github.yasmiins.orderexecutionservice.service.event.OrderPartiallyFill
 public class SimulatedFillProcessor {
 
     private static final int SCALE = 6;
+    private static final String LIFECYCLE_LOG_TEMPLATE =
+        "event={} orderId={} symbol={} fromStatus={} toStatus={} filledQuantity={} quantity={} price={} idempotencyKey={}";
+    private static final Logger log = LoggerFactory.getLogger(SimulatedFillProcessor.class);
 
     private final OrderRepository orderRepository;
     private final ExecutionRepository executionRepository;
     private final SimulatedFillProperties properties;
     private final DomainEventPublisher eventPublisher;
+    private final OrderMetrics orderMetrics;
 
     public SimulatedFillProcessor(
         OrderRepository orderRepository,
         ExecutionRepository executionRepository,
         SimulatedFillProperties properties,
-        DomainEventPublisher eventPublisher
+        DomainEventPublisher eventPublisher,
+        OrderMetrics orderMetrics
     ) {
         this.orderRepository = orderRepository;
         this.executionRepository = executionRepository;
         this.properties = properties;
         this.eventPublisher = eventPublisher;
+        this.orderMetrics = orderMetrics;
     }
 
     @Transactional
@@ -63,7 +71,19 @@ public class SimulatedFillProcessor {
         if (remaining.signum() <= 0) {
             if (beforeStatus != OrderStatus.FILLED) {
                 order.setStatus(OrderStatus.FILLED);
-                orderRepository.save(order);
+                Order saved = orderRepository.save(order);
+                log.info(
+                    LIFECYCLE_LOG_TEMPLATE,
+                    "order_filled",
+                    saved.getId(),
+                    saved.getInstrument().getSymbol(),
+                    beforeStatus,
+                    saved.getStatus(),
+                    saved.getFilledQuantity(),
+                    saved.getQuantity(),
+                    price,
+                    null
+                );
                 publishStatusTransition(beforeStatus, OrderStatus.FILLED, order.getId());
             }
             return;
@@ -84,7 +104,23 @@ public class SimulatedFillProcessor {
             ? OrderStatus.FILLED
             : OrderStatus.PARTIALLY_FILLED;
         order.setStatus(nextStatus);
-        orderRepository.save(order);
+        Order saved = orderRepository.save(order);
+        orderMetrics.incrementFillCreated(nextStatus);
+        if (beforeStatus != nextStatus) {
+            String event = nextStatus == OrderStatus.FILLED ? "order_filled" : "order_partially_filled";
+            log.info(
+                LIFECYCLE_LOG_TEMPLATE,
+                event,
+                saved.getId(),
+                saved.getInstrument().getSymbol(),
+                beforeStatus,
+                nextStatus,
+                saved.getFilledQuantity(),
+                saved.getQuantity(),
+                price,
+                null
+            );
+        }
         publishStatusTransition(beforeStatus, nextStatus, order.getId());
     }
 
