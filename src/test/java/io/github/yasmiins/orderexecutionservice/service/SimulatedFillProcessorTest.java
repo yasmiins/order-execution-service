@@ -41,6 +41,9 @@ class SimulatedFillProcessorTest {
     @Mock
     private DomainEventPublisher eventPublisher;
 
+    @Mock
+    private OrderMetrics orderMetrics;
+
     private SimulatedFillProperties properties;
     private SimulatedFillProcessor processor;
 
@@ -52,7 +55,13 @@ class SimulatedFillProcessorTest {
         properties.setDefaultPrice(new BigDecimal("100"));
         properties.setPrices(Map.of("AAPL", new BigDecimal("100")));
 
-        processor = new SimulatedFillProcessor(orderRepository, executionRepository, properties, eventPublisher);
+        processor = new SimulatedFillProcessor(
+            orderRepository,
+            executionRepository,
+            properties,
+            eventPublisher,
+            orderMetrics
+        );
     }
 
     @Test
@@ -64,6 +73,7 @@ class SimulatedFillProcessorTest {
         );
         UUID id = assignId(order);
         when(orderRepository.findById(id)).thenReturn(Optional.of(order));
+        when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         processor.processOrder(id, new BigDecimal("100"));
 
@@ -102,6 +112,7 @@ class SimulatedFillProcessorTest {
         );
         UUID id = assignId(order);
         when(orderRepository.findById(id)).thenReturn(Optional.of(order));
+        when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         processor.processOrder(id, new BigDecimal("100"));
 
