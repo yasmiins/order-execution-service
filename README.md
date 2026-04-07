@@ -27,6 +27,8 @@ This service manages the lifecycle of equity orders and executions, including id
 
 ## How to run locally
 
+Make sure Docker Desktop (or another Docker daemon) is running before you execute these commands.
+
 1. Start Postgres (example using Docker Compose):
    ```bash
    docker compose up -d postgres
@@ -47,6 +49,8 @@ Defaults are configured in `src/main/resources/application.yml`:
 Override using environment variables: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`.
 
 ## How to run with Docker Compose
+
+Make sure Docker Desktop (or another Docker daemon) is running before you execute these commands.
 
 ```bash
 docker compose up --build
@@ -94,11 +98,33 @@ curl -s -X POST http://localhost:8080/orders \
   -d '{"symbol":"AAPL","side":"BUY","quantity":10,"price":100.5,"orderType":"LIMIT"}'
 
 # Get
-curl -s http://localhost:8080/orders/{id}
+curl -s http://localhost:8080/orders/<id>
 
 # Cancel
-curl -s -X POST http://localhost:8080/orders/{id}/cancel
+curl -s -X POST http://localhost:8080/orders/<id>/cancel
 ```
+
+PowerShell-safe examples:
+
+```powershell
+# Create
+@'
+{"symbol":"AAPL","side":"BUY","quantity":10,"price":100.5,"orderType":"LIMIT"}
+'@ | curl.exe -s -X POST "http://localhost:8080/orders" -H "Content-Type: application/json" --data-binary "@-"
+
+# Idempotent create
+@'
+{"symbol":"AAPL","side":"BUY","quantity":10,"price":100.5,"orderType":"LIMIT"}
+'@ | curl.exe -s -X POST "http://localhost:8080/orders" -H "Content-Type: application/json" -H "Idempotency-Key: demo-123" --data-binary "@-"
+
+# Get
+curl.exe -s "http://localhost:8080/orders/<id>"
+
+# Cancel
+curl.exe -s -X POST "http://localhost:8080/orders/<id>/cancel"
+```
+
+Note: the simulator can fill orders quickly; cancel immediately after create or set `simulator.enabled: false` for deterministic cancels.
 
 ## Metrics and Actuator
 
